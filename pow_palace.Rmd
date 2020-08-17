@@ -1,0 +1,538 @@
+---
+title: "Barley (Palace) RNAseq analysis during powdery mildew infection"
+author: "Paula Moolhuijzen"
+date: "Date: `r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### DESeq2 analysis of Palace isogenic lines
+
+Raw data set = H201SC19061553
+
+```{r, echo=FALSE, message=F, warning=F}
+getwd()
+setwd(getwd())
+print(getwd())
+
+library(DESeq2)
+library(ggplot2)
+library(genefilter)
+library(gplots)
+library(affy)
+library(pheatmap)
+library("dplyr")
+library(pca3d)
+library(ggfortify)
+library("Hmisc")
+library(corrplot)
+require(scatterplot3d)
+library(reshape2)
+library(ggpubr)
+
+
+meta <- read.table("meta_palace", sep="\t", header = TRUE, row.names = 1)
+str(meta)
+mat <- read.table("matrix_palace", sep="\t", header = TRUE, row.names=1)
+#mat <- mat[rowSums(mat) > 30, ]
+
+data <- DESeqDataSetFromMatrix(countData=mat, colData=meta, design=~line + treatment)
+
+rld <- rlogTransformation(data)
+vst <- vst(data, blind = FALSE)
+dds <- DESeq(data)
+vsd <- vst(dds, blind = FALSE)
+```
+
+
+
+#### PCA plot log transformed data set
+Variance data set based on line and treatment.
+
+```{r , echo=FALSE}
+
+plotPCA(rld, intgroup = "line_treatment")
+```
+
+```{r , echo=FALSE}
+pdf("PCA-palace.pdf")
+
+plotPCA(rld, intgroup = "line_treatment")
+
+dev.off()
+```
+
+#### Plots for raw read count per sample
+```{r, echo=FALSE}
+bpt <- barplot(colSums(mat)/1000000, 
+               main="Total no. reads per sample (million)",
+               #col=phenoTable$color, 
+               las=1,  horiz=TRUE,
+               ylab="Samples", cex.names=0.5,
+               xlab="Million counts")
+```
+
+
+```{r, echo=FALSE}
+epsilon <- 1 # pseudo-count to avoid problems with log(0)
+hg <- hist(as.matrix(log2(mat + epsilon)), breaks=100, col="blue", border="white",
+           main="Log2 counts per gene", xlab="log2(counts+1)", ylab="Number of genes", 
+           las=1, cex.axis=0.7)
+```
+
+
+```{r mat, echo=FALSE}
+bx <- boxplot(log2(mat + epsilon), pch=".", 
+              horizontal=TRUE, cex.axis=0.5, main="Log2 counts per sample",
+              las=1, ylab="Samples", xlab="log2(counts +1)")
+```
+
+
+
+#### Plots for normalised read counts per sample
+```{r ,echo=FALSE }
+# plot 6
+epsilon <- 1 
+bx <- boxplot(log2(counts(dds, normalized=TRUE)+epsilon),  col=meta$Group, cex.axis=0.7, 
+              las=1, xlab="log2(normalized counts)", horizontal=TRUE, main="Normalized counts")
+```
+
+#### Density plot 
+```{r,echo=FALSE }
+ds <- plotDensity(log2(counts(dds, normalized=TRUE)+epsilon),  
+                  xlab="log2(normalized counts)", cex.lab=0.7, panel.first=grid()) 
+```
+
+#### Mean and variance relationship - Computing mean and variance
+```{r, echo=FALSE }
+norm.counts <- counts(dds, normalized=TRUE)
+mean.counts <- rowMeans(norm.counts)
+variance.counts <- apply(norm.counts, 1, var)
+
+mean.var.col <- densCols(x=log2(mean.counts), y=log2(variance.counts))
+plot(x=log2(mean.counts), y=log2(variance.counts), pch=16, cex=0.5, 
+     col=mean.var.col, main="Mean-variance relationship",
+     xlab="Mean log2(normalized counts) per gene",
+     ylab="Variance of log2(normalized counts)",
+     panel.first = grid())
+abline(a=0, b=1, col="brown")
+
+```
+
+#### MA-plot
+
+```{r, echo=FALSE}
+de <- results(dds)
+mostsig <- subset(de, (padj <= 0.05 & !is.na(padj)) & abs(log2FoldChange) >= 1 )
+ggmaplot(de, fdr = 0.05, fc = 2, size = 0.4, palette = c("#B31B21", "#1465AC", "darkgray"),
+         genenames = as.vector(mostsig$name), legend = "top", top = 5, font.label = c("bold", 11),
+         font.legend = "bold", font.main = "bold",
+         ggtheme = ggplot2::theme_minimal())
+```
+
+
+#### Plot dispersion estimates
+```{r, echo=FALSE}
+eds <- plotDispEsts(dds)
+```
+
+#### PCA plot log transformed data set
+
+Variance data set based on line and treatment. Top 5000 genes with variance.
+
+```{r , echo=FALSE}
+rv <- rowVars(assay(vst))
+# select the ntop genes by variance
+select <- head(order(rv, decreasing=TRUE), 5000)
+plotPCA(vst, intgroup = "line_treatment")
+```
+
+
+Plot of the correlation  
+
+```{r, echo=FALSE}
+
+ass <- assay(vst)[select,]
+head(cor(ass))
+```
+
+```{r, echo=FALSE}
+pheatmap(cor(ass))
+
+```
+
+Plot of the correlation coefficent 
+
+```{r, echo=FALSE}
+res <- cor(mat[select,])
+res <- round(res, 3)
+
+#install.packages("Hmisc")
+
+res2 <-rcorr(res, type = c("pearson","spearman"))
+head(res2$r)
+
+```
+
+Extract the correlation coefficients
+```{r, echo=FALSE}
+# Extract the correlation coefficients
+head(res2$r)
+
+```
+
+```{r, echo=FALSE}
+# Extract p-values
+head(res2$P)
+
+```
+
+Flattened correlation coefficients and correlation p-values
+```{r, echo=FALSE}
+
+# ++++++++++++++++++++++++++++
+# flattenCorrMatrix
+# ++++++++++++++++++++++++++++
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+
+```
+
+
+Correlation plot with significance
+
+```{r, echo=FALSE}
+
+corrplot(res2$r, type = "upper", order = "hclust", 
+         tl.col = "black", sig.level=0.01, tl.srt = 45, insig="blank",  cl.lim=c(min(res2$r), max(res2$r)), is.corr=FALSE)
+
+```
+
+```{r}
+
+pdf("Palace-correlation-plot.pdf")
+
+corrplot(res2$r, type = "upper", order = "hclust", 
+         tl.col = "black", sig.level=0.01, tl.srt = 45, insig="blank",  cl.lim=c(min(res2$r), max(res2$r)), is.corr=FALSE)
+
+dev.off()
+
+```
+
+
+```{r, echo=FALSE}
+#http://www.sthda.com/english/wiki/ggplot2-quick-correlation-matrix-heatmap-r-software-and-data-visualization
+
+melted_cormat <- melt(res2$r)
+head(melted_cormat)
+ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile()
+```
+
+
+```{r, echo=FALSE}
+# Get lower triangle of the correlation matrix
+  get_lower_tri<-function(cormat){
+    cormat[upper.tri(cormat)] <- NA
+    return(cormat)
+  }
+  # Get upper triangle of the correlation matrix
+  get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)]<- NA
+    return(cormat)
+  }
+```
+
+```{r, echo=FALSE}
+upper_tri <- get_upper_tri(res2$r)
+
+```
+
+unsorted
+
+```{r, echo=FALSE}
+# Melt the correlation matrix
+
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+# Heatmap
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+ 
+```
+
+
+```{r, echo=FALSE}
+reorder_cormat <- function(cormat){
+# Use correlation between variables as distance
+dd <- as.dist((1-cormat)/2)
+hc <- hclust(dd)
+cormat <-cormat[hc$order, hc$order]
+}
+
+```
+
+sorted
+
+```{r, echo=FALSE}
+# Reorder the correlation matrix
+cormat <- round(reorder_cormat(res2$r), 2)
+upper_tri <- get_upper_tri(cormat)
+# Melt the correlation matrix
+melted_cormat <- melt(upper_tri, na.rm = TRUE)
+# Create a ggheatmap
+ggheatmap <- ggplot(melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+# Print the heatmap
+print(ggheatmap)
+```
+
+
+Added labels
+
+```{r,echo=FALSE}
+ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 2) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(0.6, 0.7),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+                
+```
+
+```{r, echo=FALSE}
+
+library(RColorBrewer)
+heatmap.2(res2$r, scale = "row", key=TRUE, col= colorRampPalette(brewer.pal(8, "Oranges"))(10))
+
+
+```
+
+
+```{r, echo=FALSE}
+pdf(file="Palace-correlation-heatmap.pdf")
+
+library(RColorBrewer)
+heatmap.2(res2$r, scale = "row", key=TRUE, col= colorRampPalette(brewer.pal(8, "Oranges"))(10))
+
+dev.off()
+
+```
+PCA 3-Dimensional plot
+```{r, echo=FALSE}
+
+pca <- prcomp(t(assay(vst)[select,]))
+
+#class(pca)
+#summary(pca)
+#pca3d(pca, components = 1:3, show.labels=FALSE, group=meta$line_treatment, legend="topleft")
+#pca3d(pca, components = 1:3, group=meta$line_treatment, show.ellipses=TRUE, ellipse.ci=0.75, show.plane=FALSE )
+#pca3d(pca, components = 1:3, group=meta$line_treatment )
+
+```
+
+Bar plot of Principal components
+
+```{r, echo=FALSE}
+#Determine the proportion of variance of each component
+#Proportion of variance equals (PC stdev^2) / (sum all PCs stdev^2)
+pca.proportionvariances <- ((pca$sdev^2) / (sum(pca$sdev^2)))*100
+barplot(pca.proportionvariances, cex.names=1, xlab=paste("Principal component (PC), 1-", length(pca$sdev)), ylab="Proportion of variation (%)", main="Screen plot", ylim=c(0,100))
+
+```
+
+
+#### Plot expression of top 20 genes with largest variance (vst)
+```{r, echo=FALSE }
+topVarGenes <- head(order(rowVars(assay(vst)), decreasing = TRUE), 100)
+top  <- assay(vst)[ topVarGenes, ]
+#top  <- top - rowMeans(top)
+
+anno <- as.data.frame(colData(dds)[, c("line","treatment")])
+pheatmap(top, annotation_col = anno, show_rownames = F)
+```
+
+#### Plot expression of top 20 genes with largest variance (Var-MeanVar)
+```{r,echo=FALSE }
+topVarGenes <- head(order(rowVars(assay(vst)), decreasing = TRUE), 100)
+top  <- assay(vst)[ topVarGenes, ]
+top  <- top - rowMeans(top)
+
+anno <- as.data.frame(colData(vst)[, c("line","treatment")])
+pheatmap(top, annotation_col = anno, show_rownames = F)
+```
+
+```{r,echo=FALSE }
+pdf("Palace-top100-mean.pdf")
+
+write.table(top, file="Palace-topVarGenes.txt", row.names = T, col.names = T)
+
+pheatmap(top, annotation_col = anno, show_rownames = F)
+
+dev.off()
+
+```
+
+### Simple contrast analysis for significant differentially expressed (DE) genes
+
+```{r , echo=FALSE, message=F, warning=F }
+meta <- read.table("meta_palace", sep="\t", header = TRUE, row.names = 1)
+#str(meta)
+mat <- read.table("matrix_palace", sep="\t", header = TRUE, row.names=1)
+#mat <- mat[rowSums(mat) > 30, ]
+mat <- mat[rowSums(mat) > 30, ]
+
+data <- DESeqDataSetFromMatrix(countData=mat, colData=meta, design=~ line_treatment)
+
+dds <- DESeq(data)
+
+dds$group <- factor(paste0(dds$line, dds$treatment))
+design(dds) <- ~ group
+
+
+resultsNames(dds)
+```
+
+```{r, echo=FALSE}
+#vst <- vst(dds, blind = FALSE)
+#head(assay(vst), 3)
+```
+
+Printing most significant at (padj <= 0.05 & !is.na(padj)) & abs(log2FoldChange) >= 1 )
+```{r , echo=FALSE, message=F, warning=F }
+res <- results(dds)
+mostsig <- subset(res, (padj <= 0.05 & !is.na(padj)) & abs(log2FoldChange) >= 1 )
+dim(mostsig)
+write.table(mostsig, file="Palace-most-significant.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+```
+
+```{r, echo=FALSE}
+
+ggmaplot(res, fdr = 0.05, fc = 2, size = 0.4, palette = c("#B31B21", "#1465AC", "darkgray"),
+         genenames = as.vector(mostsig$name), legend = "top", top = 5, font.label = c("bold", 11),
+         font.legend = "bold", font.main = "bold",
+         ggtheme = ggplot2::theme_minimal())
+```
+
+####  P22 uninfected (control) vs P18 uninfected (control): logFC result is P22C/P18C
+
+Positive FC is upregulated (induced) in P22 or downregulated in P18
+Negative FC is downregulated (supressed) in P22 or upregulated in P18
+
+P22_control/P18_control.result <- results( dds, contrast = c("group", "P22_control", "P18_control") )
+```{r, echo=FALSE }
+# e.g. for P18 control vs P22 control
+de_pal_crtl <- results(dds, contrast=c("line_treatment","P22_control","P18_control"), lfcThreshold=0, altHypothesis="greaterAbs", pAdjustMethod = "BH")
+mostsig <- subset(de_pal_crtl, (padj <= 0.05 & !is.na(padj)) & abs(log2FoldChange) >= 1 )
+
+```
+
+
+```{r, echo=FALSE}
+
+ggmaplot(de_pal_crtl, fdr = 0.05, fc = 2, size = 0.4, palette = c("#B31B21", "#1465AC", "darkgray"),
+         genenames = as.vector(mostsig$name), legend = "top", top = 5, font.label = c("bold", 11),
+         font.legend = "bold", font.main = "bold",
+         ggtheme = ggplot2::theme_minimal())
+```
+
+
+#### Filter the number of DE genes at log2FoldChange >= 1 & padj <= 0.05
+```{r , echo=FALSE}
+#de_pal_crtl <- subset(de_pal_crtl, !is.na(padj) & abs(log2FoldChange) >= 2 & padj <= 0.005)
+de_pal_crtl <- subset(de_pal_crtl, abs(de_pal_crtl$log2FoldChange) >= 1 & de_pal_crtl$padj <= 0.05)
+write.table(de_pal_crtl, file="most-significant-P22_control-versus-P18_control.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+dim(de_pal_crtl)
+```
+
+```{r , echo=FALSE}
+de_pal_crtl <- rownames(de_pal_crtl)
+de_pal_crtl <- log2(assay(dds)[ de_pal_crtl, ] +1)
+#deS12S0cl  <- deS12S0cl - rowMeans(deS12S0cl)
+
+cal_z_score <- function(de_pal_crtl){
+  (de_pal_crtl - mean(de_pal_crtl)) / sd(de_pal_crtl)
+}
+ de_pal_crtln <- t(apply(de_pal_crtl, 1, cal_z_score))
+anno <- as.data.frame(colData(dds)[, c("line","treatment")])
+
+pheatmap(de_pal_crtln, annotation_col = anno, show_rownames = F, main = "P22C / P18C")
+
+```
+
+
+#### P22 infected (treatment) vs P18 infected (control): logFC result is P22P/P18P 
+
+Positive FC is upregulated (induced) in P18 or downregulated in P22
+
+Negative FC is downregulated (supressed) in P18 or upregulated in P22 
+
+P18_control/P22_control.result <- results( dds, contrast = c("line_treatment", "P18_Inoculation", "P22_Inoculation") )
+
+```{r, echo=FALSE}
+
+de_inf <-results(dds, contrast=c("line_treatment","P18_Inoculation","P22_Inoculation"), lfcThreshold=0, altHypothesis="greaterAbs", pAdjustMethod = "BH")
+
+```
+
+```{r, echo=FALSE}
+
+ggmaplot(de_inf, fdr = 0.05, fc = 2, size = 0.4, palette = c("#B31B21", "#1465AC", "darkgray"),
+         genenames = as.vector(mostsig$name), legend = "top", top = 5, font.label = c("bold", 11),
+         font.legend = "bold", font.main = "bold",
+         ggtheme = ggplot2::theme_minimal())
+```
+#### Number of DE genes at log2FoldChange >= 1 & padj <= 0.05
+```{r, echo=FALSE}
+de_inf <- subset(de_inf, !is.na(padj) & abs(log2FoldChange) >= 1 & padj <= 0.05)
+write.table(de_inf, file="most-significant-P22_Inoculation_P18_Inoculalation.txt", sep="\t", col.names=TRUE, row.names=TRUE)
+dim(de_inf)
+```
+
+```{r , echo=FALSE}
+de_inf <- rownames(de_inf)
+de_inf <- log2(assay(dds)[de_inf, ] +1)
+#deS12S0cl  <- deS12S0cl - rowMeans(deS12S0cl)
+
+cal_z_score <- function(de_inf){
+  (de_inf - mean(de_inf)) / sd(de_inf)
+}
+ de_infn <- t(apply(de_inf, 1, cal_z_score))
+anno <- as.data.frame(colData(dds)[, c("line","treatment")])
+
+pheatmap(de_infn, annotation_col = anno, show_rownames = F, main = "P22I / P18I")
+
+```

@@ -1,0 +1,13 @@
+	line	treatment	type	replicate	line_treatment
+P18C1	P18	control	wild	1	P18_control
+P18C2	P18	control	wild	2	P18_control
+P18C3	P18	control	wild	3	P18_control
+P18I1	P18	Inoculation	wild	1	P18_Inoculation
+P18I2	P18	Inoculation	wild	2	P18_Inoculation
+P18I3	P18	Inoculation	wild	3	P18_Inoculation
+P22C1	P22	control	mloko	1	P22_control
+P22C2	P22	control	mloko	2	P22_control
+P22C3	P22	control	mloko	3	P22_control
+P22I1	P22	Inoculation	mloko	1	P22_Inoculation
+P22I2	P22	Inoculation	mloko	2	P22_Inoculation
+P22I3	P22	Inoculation	mloko	3	P22_Inoculation
